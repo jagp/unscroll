@@ -1,367 +1,165 @@
 ---
 name: unscroll
 description: >
-  Reconstructs complete text message conversation histories from multiple partial screenshots
-  into a searchable, portable archive. Use this skill whenever a user provides screenshots
-  of a messaging conversation — uploaded as individual image files or a ZIP — and wants them
-  assembled into a transcript, archive, or structured record. Triggers on: "stitch my
-  screenshots", "combine these messages", "reconstruct my conversation", "make an archive
-  of my texts", "export my chat history from screenshots", or any request to assemble
-  fragmented views of a messaging thread into a readable whole. Also triggers when a user
-  provides a batch of conversation screenshots without explicit instructions, clearly intending
-  to do something with them together. Handles iOS Messages, WhatsApp (iOS and desktop),
-  Android Messages, and other common platforms via extensible platform detection.
+  Reconstructs a complete text-message conversation thread into a structured, portable
+  transcript from EITHER overlapping screenshots OR a scroll-capture video. Use this skill
+  whenever a user provides screenshots of a messaging conversation — uploaded as individual
+  image files, a folder, or a ZIP — or a screen recording of a chat, and wants them assembled
+  into a transcript, archive, or structured record. Triggers on: "stitch my screenshots",
+  "combine these messages", "reconstruct my conversation", "make an archive of my texts",
+  "export my chat history from screenshots", "video of me scrolling my messages", "screen
+  recording of a chat", "turn this scroll capture into a transcript", or any request to
+  assemble fragmented or scrolled views of a messaging thread into a readable whole. Also
+  triggers when a user provides a batch of conversation screenshots or a scroll video without
+  explicit instructions, clearly intending to do something with them together. Handles iOS
+  Messages and other common chat layouts; chrome (status bar, nav, input bar, keyboard) is
+  detected at runtime, so no per-app configuration is needed.
 ---
 
 # Unscroll
 
-Converts a batch of overlapping messaging app screenshots into a complete, portable
-conversation record. Input is a set of partial screenshots of the same thread. Output
-is a structured transcript in multiple formats, validated against a stitched visual image
-of the full conversation.
+Reconstruct an asynchronous chat thread (iOS-Messages-style, or generic) into a structured
+transcript from **overlapping screenshots** or a **scroll-capture video**. Image-only: unscroll
+never touches a device or a message database — it reads what is on screen.
 
-The stitched image is a **validation artifact** — its primary purpose is to confirm that
-the user's screenshot capture was complete and gapless. The deliverable outputs are the
-transcript files.
+The work splits cleanly. Deterministic scripts (numpy/Pillow/ffmpeg) do ALL the geometry:
+overlap detection, ordering, stitching, message segmentation, dedup, and video keyframe
+selection. **You (the multimodal model) read the glyph text** from the per-message crop images
+the scripts emit, and fill it into the transcript. Optional OCR (tesseract) is used only if the
+binary is present; it is never required.
 
----
+The stitched `validation.png` is a **completeness check**, not the deliverable. Its only job is
+to let you and the user confirm the capture is gapless. The deliverables are the transcript
+files (JSON, plain text, Markdown).
 
-## Inputs
+## Puntable by design
 
-**Accepted formats:**
-- Individual image files (PNG, JPG, HEIC, WEBP), uploaded in any quantity
-- A single ZIP archive containing image files of the same conversation
+Media, timestamps, and reactions are best-effort. When something cannot be read, set it to
+`null`, mark `confidence: "low"`, add a short note, and **keep going**. Never guess obscured or
+low-resolution text. The **only** fatal condition is an unrecoverable overlap gap after the
+retry ladder is exhausted — a genuinely missing section of the capture.
 
-**Ordering:**
-- Screenshots may be provided in any order. Do not ask the user to sort them.
-- Use filesystem creation timestamp metadata and anchor-point detection (Phase 2) to
-  establish order. File names are ignored entirely — treat them as opaque identifiers.
-- If creation timestamps are all identical or absent, rely solely on anchor detection.
+## Environment
 
-**Fatal precondition:**
-Every adjacent pair of screenshots in the reconstructed sequence must have a
-detectable visual overlap anchor. If any single pair lacks a valid anchor, **reject
-the entire batch**. Do not produce partial output. See Phase 2 for anchor detection.
+- Python 3.14+, `numpy`, `Pillow`, and `ffmpeg` (the system binary — used for HEIC decode and
+  video frame extraction). `tesseract` is optional.
+- No OpenCV. Scripts are invoked through the CLI below; do not import the modules yourself.
+- Prefer running the CLI through the **Bash tool** so `${CLAUDE_PLUGIN_ROOT}` and forward-slash
+  paths resolve correctly.
 
-Report the rejection clearly:
-> "Reconstruction failed. No overlap was found between [screenshot A] and [screenshot B].
-> These appear to be non-adjacent screenshots. Please capture the missing portion of the
-> conversation — you need at least one message visible in both screenshots where they meet."
+## Orchestration flow
 
----
+Follow these steps in order.
 
-## Outputs (Default)
+### 1. Identify the input
 
-All three are produced by default unless the user specifies otherwise.
+Determine whether the user gave you a folder/ZIP of screenshots, a single image, or a video
+file (`.mp4`, `.mov`, `.m4v`, `.avi`, `.mkv`, `.webm`). You do not need to sort screenshots or
+inspect them first — the pipeline orders them by visual overlap. File names are opaque.
 
-| Output | Format | Description |
-|--------|--------|-------------|
-| **Transcript (script format)** | Markdown `.md` | Human-readable, paginated, dialogue-script style |
-| **Structured export** | JSON `.json` | Machine-readable, message-level data with metadata |
-| **Validation image** | PNG | Full stitched thread, used to verify capture completeness |
+### 2. Run the pipeline
 
-The validation image is not the primary deliverable and should be described to the user
-as a completeness check. If the conversation is very long, note that the image may be
-extremely tall and suggest viewing it in an image viewer that supports vertical scrolling.
-
----
-
-## Processing Pipeline
-
-### Phase 1 — Intake, Platform Detection, and Ordering
-
-1. Accept all input files. If a ZIP was provided, extract contents to a working set.
-   Discard non-image files silently.
-
-2. For each screenshot, determine:
-   - **Platform**: Load `references/platform-registry.md` and identify the platform
-     using the visual fingerprinting checklist. This must be done before Phase 2
-     because chrome boundary values depend on platform.
-   - **Filesystem timestamp**: Read file creation or modification timestamp as a
-     coarse ordering signal. Note if absent or identical across files.
-   - **Edge content**: Note the first and last visible message in each screenshot
-     (used during ordering validation in Phase 2).
-
-3. Flag and report to the user (but do not halt):
-   - Screenshots that appear to be from a different conversation or platform
-   - Screenshots where platform could not be determined with confidence
-
-4. Produce a provisional ordering based on timestamps. Phase 2 will validate and
-   correct this ordering using anchor detection.
-
----
-
-### Phase 2 — Anchor Detection and Order Validation
-
-This is the critical phase. A failure here is a fatal error.
-
-For each adjacent pair in the provisional order (screenshot[i], screenshot[i+1]):
-
-#### Step 2a: Extract anchor strips
-
-Strip top and bottom chrome from both screenshots using the platform chrome boundaries
-from `references/platform-registry.md`. Work only within the content area.
-
-From screenshot[i]: crop a strip from the **bottom** of the content area.
-From screenshot[i+1]: crop a strip from the **top** of the content area.
-
-Strip height: `max(3 complete message bubbles, 20% of content area height)`.
-
-These are the **anchor strips** — horizontal slices capturing the zone that should
-appear in both screenshots at their meeting point.
-
-#### Step 2b: Match anchors
-
-Slide the anchor strips against each other to find the row offset at which they
-align. The alignment offset `d*` is the number of rows of visual overlap between
-the two screenshots.
-
-If no alignment is found above the minimum confidence threshold: **fatal anchor failure**.
-Reject the batch. See the input section for the rejection message.
-
-If the provisional order produces anchor failures but a reordering resolves them
-(e.g., two screenshots were swapped), apply the reorder and note it in the output.
-Only reject if no valid ordering of the provided screenshots produces a complete
-unbroken chain.
-
-See `references/overlap-detection.md` for the full matching algorithm, tolerance
-values, and confidence scoring.
-
-#### Step 2c: Select splice rows
-
-Within each validated overlap zone, find the optimal splice row — a horizontal gap
-between message bubbles, nearest the midpoint of the overlap zone.
-
-Mark each splice row with its confidence level (high / medium / low).
-
----
-
-### Phase 3 — Stitching (Validation Artifact)
-
-1. For each screenshot, determine its content segment:
-   - **First**: top of content area to its splice row with screenshot[1]
-   - **Middle**: from splice row with screenshot[i-1] to splice row with screenshot[i+1]
-   - **Last**: from splice row with screenshot[n-1] to bottom of content area
-
-2. Strip all chrome from each segment. Retain only the message content region.
-
-3. Concatenate segments vertically in order. This is the validation image.
-
-4. Mark each splice point with a 1px hairline in a neutral, semi-transparent color.
-   Offer a clean version without markers if the user requests it.
-
-5. Save as PNG. Communicate to the user that this image's purpose is to let them
-   visually confirm that the full conversation is present and properly assembled.
-
----
-
-### Phase 4 — Structured Extraction
-
-Extract message records from the source screenshots (higher per-message resolution
-than the stitched image). Process screenshots in order; deduplicate messages that
-appear in the overlap zones of adjacent screenshots.
-
-For each message, record:
-
-```json
-{
-  "index": 0,
-  "sender": "self | other | unknown",
-  "display_name": "string or null",
-  "timestamp": "ISO 8601 string or null",
-  "timestamp_source": "explicit | interpolated | absent",
-  "content": "string or null",
-  "type": "text | image | audio | video | sticker | reaction | link_preview | system",
-  "confidence": "high | medium | low",
-  "notes": "optional flag"
-}
+```bash
+python "${CLAUDE_PLUGIN_ROOT}/skills/unscroll/scripts/unscroll.py" run <input> --workdir <workdir> [--platform "iOS Messages"]
 ```
 
-Rules:
-- **Sender**: determined by bubble alignment (platform-specific; see platform registry)
-- **Timestamps**: use visible in-thread labels as anchors; interpolate linearly between
-  them; mark interpolated entries with `"timestamp_source": "interpolated"`
-- **Unreadable content**: set `content` to null, `confidence` to `low`, note the reason.
-  Do not guess at obscured or low-resolution text.
-- **Deduplication**: messages visible in the overlap zone of two adjacent screenshots
-  appear once in the output, not twice.
+`<input>` is the folder, ZIP, image, or video path. `<workdir>` is a fresh working directory
+for artifacts. `--platform` is an optional label recorded in metadata (it does not change
+detection — chrome is found at runtime). Other flags: `--no-mark` (omit splice hairlines in the
+validation image), `--no-timestamps` (ignore file timestamps entirely when ordering).
 
-Top-level metadata block:
+The command prints a JSON summary and writes into `<workdir>`:
 
-```json
-{
-  "metadata": {
-    "skill": "unscroll",
-    "platform": "string",
-    "platform_confidence": "high | medium | low",
-    "participants": 2,
-    "date_range": { "start": "ISO 8601 or null", "end": "ISO 8601 or null" },
-    "total_messages": 0,
-    "screenshots_used": 0,
-    "stitch_confidence": "high | medium | low",
-    "flagged_segments": [],
-    "generated_at": "ISO 8601"
-  },
-  "messages": []
-}
+| Artifact | What it is |
+|----------|------------|
+| `report.json` | Confidence, flags, resolved order, and any fatal gaps |
+| `validation.png` | The stitched thread — a completeness check |
+| `crops/msg_*.png` | One high-res crop per message, in order |
+| `transcript.json` | The canonical document (`content` is `null` until you read it) |
+| `transcript.txt` / `transcript.md` | Draft renders (unread messages show `[unreadable]`) |
+
+### 3. Check for fatal gaps
+
+Open `<workdir>/report.json`. If `fatal_gaps` is **non-empty**, stop and tell the user exactly
+which frames fail to overlap. A fatal gap means a section of the conversation is missing between
+two captures. Report it plainly, for example:
+
+> Reconstruction can't complete: no overlap was found between two of your captures, so a section
+> of the conversation is missing between them. Please re-capture that stretch — make sure at
+> least one message is visible in both the screenshot before the gap and the one after — and run
+> it again.
+
+Include the specific frame pair from the `fatal_gaps` entry (its `between` field). The pipeline
+still writes partial output, but do not present it as complete. If `fatal_gaps` is empty,
+continue.
+
+### 4. Confirm completeness visually
+
+Open `<workdir>/validation.png` and confirm the thread reads as one continuous, gapless
+conversation. This is a sanity check on the stitch, not the output you deliver. For a very long
+thread the image will be extremely tall; note that to the user.
+
+### 5. Read the crops and fill the transcript
+
+Open `<workdir>/transcript.json`. For each message, the `notes` field carries `crop:<path>`.
+Open that crop image and read it. For each message, fill in:
+
+- `content` — the message text. Unreadable → leave `null`, set `confidence: "low"`, add a note.
+  Do NOT guess obscured text.
+- `display_name` — the sender's visible name, if shown; else leave `null`.
+- `timestamp` — a visible in-thread time as ISO 8601, and set `timestamp_source` to `"explicit"`.
+  Between two known times you may interpolate and set `"interpolated"`. Otherwise leave
+  `timestamp` `null` and `timestamp_source` `"absent"`.
+- `type` — correct it if the geometry guessed wrong (`text`, `image`, `audio`, `video`,
+  `sticker`, `reaction`, `link_preview`, `system`).
+- `confidence` — bump to `high`/`medium`/`low` to reflect how readable the crop was.
+
+Punt on anything you can't identify: media you can't classify, a reaction you can't read, a
+timestamp that isn't shown — keep it `null`, add a note, move on. The `sender` field
+(`self`/`other`/`unknown`) is set by geometry; only override it if the crop clearly contradicts
+it.
+
+### 6. Render the final transcripts
+
+Save the filled JSON, then run:
+
+```bash
+python "${CLAUDE_PLUGIN_ROOT}/skills/unscroll/scripts/unscroll.py" render <filled.json> --workdir <workdir> --formats json,text,markdown
 ```
 
----
+`render` validates the document schema first and refuses to render a malformed one (it prints
+the specific problems). It writes `transcript.json`, `transcript.txt`, and `transcript.md`.
 
-### Phase 5 — Transcript (Script Format)
+### 7. Report to the user
 
-Generate the human-readable transcript from the Phase 4 JSON output.
+Summarize: total messages; whether frames were reordered (`reordered` in the report); overall
+confidence; any flags (low-confidence joins, unreadable messages, invariant warnings); and the
+output file paths.
 
-#### Format
+## What the scripts guarantee (so you don't re-derive it)
 
-Use a modified TV/film dialogue script format:
+- **Ordering is by content, not file order.** Screenshots arrive in any order; a full pairwise
+  overlap matrix and a greedy chain reconstruct the true top-to-bottom sequence. Timestamps are
+  only a tiebreaker.
+- **Self-healing.** Work is content-hash checkpointed (resumable). Every adjacency that doesn't
+  validate at the default threshold is retried through a relaxation ladder before any gap is
+  called fatal. Cheap invariant self-tests (stitched height vs. summed segments, monotonic
+  indices, no duplicate content across a seam) downgrade confidence rather than trust bad output.
+- **Registry-free chrome.** Status bar / nav / input bar / keyboard are detected per run from
+  temporal stability across same-resolution frames, with a single-image structural fallback. No
+  device or app profile is needed.
+- **Video becomes clean keyframes.** A scroll recording is reduced to the minimal set of sharp,
+  settled, mutually-overlapping stills, which then flow through the identical screenshot path.
 
-```
-════════════════════════════════════════════════════
-UNSCROLL TRANSCRIPT
-Thread: [contact name or "Unknown Contact"]
-Platform: [platform]
-Date range: [start] – [end]
-Messages: [total]   Screenshots: [count]
-Page [N] of [total pages]
-════════════════════════════════════════════════════
+## Reference files
 
-── JUNE 14, 2020 ────────────────────────────────
+Load these only when you need the detail; the flow above is enough for a normal run.
 
-2:47 PM · ALEX
-  Hey, are you around?
-
-2:47 PM · JAMIE
-  Yeah what's up
-
-2:48 PM · ALEX
-  Can we talk later?
-
-  [IMAGE]
-
-2:49 PM · JAMIE
-  Sure call me whenever
-
-── [3-DAY GAP] ──────────────────────────────────
-
-── JUNE 17, 2020 ────────────────────────────────
-
-9:03 AM · ALEX
-  Hey sorry about that
-```
-
-#### Pagination
-
-Pages are bounded by **both** a time-window threshold and a message-count cap:
-- New page at each calendar month boundary (default) OR after 150 messages,
-  whichever comes first
-- Always break pages at a natural gap between messages, not mid-exchange
-- Page header on every page (thread info + page number)
-
-For very active conversations, the message-count cap prevents single pages from
-becoming unreadably long. For sparse conversations, monthly grouping may produce
-many short pages — note this and offer to consolidate if the user prefers.
-
-#### Gap markers
-
-Insert a gap marker between messages where the silence exceeds:
-- 4 hours: `── [N-hour gap] ──`
-- 24 hours: `── [N-day gap] ──`
-- 7+ days: new date section header `── [DATE] ──`
-
-#### Media placeholders
-
-For non-text messages, insert a bracketed descriptor on its own line:
-`[IMAGE]`, `[AUDIO MESSAGE]`, `[VIDEO]`, `[STICKER]`, `[LINK: url-if-readable]`
-
-Do not describe image contents unless the user explicitly requests it.
-
----
-
-## Large Conversation Handling
-
-For conversations exceeding approximately 1,000 messages or 50 screenshots:
-
-- Note the scale upfront before processing begins
-- The validation image will be extremely tall; confirm the user wants it generated
-- The transcript will span many pages; confirm pagination preferences before generating
-- Phase 6 analytics becomes more meaningful at this scale; offer it proactively
-
----
-
-## Platform Detection
-
-Load `references/platform-registry.md` at the start of Phase 1. Use the fingerprinting
-checklist to identify the platform before applying any chrome boundary values or
-sender-alignment logic.
-
-Do not assume any specific platform. All platform-specific values must come from the
-registry, not hardcoded assumptions in this skill body.
-
-If platform cannot be determined with medium or higher confidence, ask the user
-which app the screenshots are from before proceeding.
-
----
-
-## Failure Modes
-
-| Condition | Action |
-|-----------|--------|
-| Missing anchor between any adjacent pair | **Fatal rejection** — halt, report pair, request missing screenshot |
-| No valid ordering resolves the chain | Fatal rejection |
-| Platform unidentifiable | Ask user before proceeding |
-| Screenshots from different conversations | Report and ask user to remove non-matching files |
-| Resolution mismatch > 15% width | Warn; ask user to confirm before proceeding |
-| Dark/light mode mix within batch | Warn; proceed; note in output |
-| Group thread (3+ senders) | Proceed with reduced sender-ID confidence; note in output |
-| Unreadable content | null content, low confidence flag — do not guess |
-| Single screenshot | Skip Phases 2–3; proceed to extraction if requested |
-
----
-
-## User Communication
-
-**Before processing:**
-- Confirm file count and types received
-- Report detected platform(s) and confidence
-- Confirm output mode preferences if ambiguous
-
-**After processing:**
-- Total messages reconstructed
-- Confidence summary per splice point
-- Any flags (gaps, low-confidence points, unreadable messages)
-- Output file paths
-
-Do not narrate processing steps inline. Surface warnings in the final report only.
-
----
-
-## Environment Guidance
-
-| Environment | Recommended approach |
-|-------------|----------------------|
-| Vision + code execution | Vision for Phases 1 & 4; pixel matching for Phases 2–3 |
-| Vision only | Visual inspection throughout; note reduced splice precision in output |
-| Code execution only | OCR for ordering + pixel matching throughout |
-
-For pixel matching implementation, see `references/overlap-detection.md`.
-
----
-
-## Reference Files
-
-| File | Load when |
+| File | Read when |
 |------|-----------|
-| `references/platform-registry.md` | Phase 1 — always |
-| `references/overlap-detection.md` | Phase 2 — always |
-| `references/analytics.md` | Phase 6 — on user request only |
-
----
-
-## Version Notes
-
-**v1 scope**: Two-party threads. ZIP and batch file input. Three default outputs.
-iOS Messages, WhatsApp (iOS/desktop), Android Messages via platform registry.
-
-**Out of v1 scope**: Archive management UI, bulk folder ingestion, group thread
-sender disambiguation beyond "unknown sender N".
+| `references/pipeline.md` | You need the end-to-end stages, CLI, artifacts, and self-healing tactics |
+| `references/overlap-detection.md` | You need overlap scoring, confidence gates, or fatal-gap / retry-ladder semantics |
+| `references/chrome-masking.md` | You need the registry-free chrome detection detail |
+| `references/video-intake.md` | The input is a video and you want the keyframe-selection detail |
+| `references/extraction.md` | You need segmentation, sender-side, dedup, or the puntable media/timestamp rules |
+| `references/output-formats.md` | You need the canonical JSON schema or the text/Markdown transcript formats |

@@ -98,6 +98,23 @@ class TestVerticalOffsetRecovery(unittest.TestCase):
             self.assertGreaterEqual(res.inlier, offset.INLIER_MIN)
             self.assertIn(res.confidence, ("high", "medium", "low"))
 
+    def test_odd_boundary_parity_recovered_at_default(self):
+        # When (H_A - overlap) is odd the ds=2 signature grids of A and B are
+        # offset by one source row; without the full-resolution refinement the
+        # per-row ZNCC decorrelates and a pixel-exact overlap under-scores. Verify
+        # the default detector recovers these at proper confidence.
+        parent = make_parent(1000, 320)
+        h = 300
+        for true_overlap in (61, 87, 133):  # h - overlap all odd
+            self.assertEqual((h - true_overlap) % 2, 1)
+            A = parent[100 : 100 + h]
+            B = parent[100 + h - true_overlap : 100 + h - true_overlap + h]
+            res = vertical_offset(A, B)  # defaults (ds=2)
+            self.assertTrue(res.valid, f"overlap={true_overlap}: {res}")
+            self.assertLessEqual(abs(res.overlap - true_overlap), 1, str(res))
+            self.assertGreaterEqual(res.score, 0.90)
+            self.assertIn(res.confidence, ("high", "medium"))
+
     def test_per_row_corr_present_and_sized(self):
         parent = make_parent(800, 300)
         true_overlap = 60
@@ -107,8 +124,10 @@ class TestVerticalOffsetRecovery(unittest.TestCase):
         res = vertical_offset(A, B, ds=2)
         self.assertIsInstance(res, OverlapResult)
         self.assertIsNotNone(res.per_row_corr)
-        # Documented deviation: one value per signature row -> overlap // ds.
-        self.assertEqual(res.per_row_corr.shape[0], res.overlap // 2)
+        # per_row_corr is one value per signature row of the overlap band: after
+        # the ds=1 parity refinement its length == overlap; if the coarse ds=2
+        # result is kept it is overlap // ds. Accept either.
+        self.assertIn(res.per_row_corr.shape[0], (res.overlap, res.overlap // 2))
         self.assertEqual(res.per_row_corr.dtype, np.float32)
 
 

@@ -26,14 +26,18 @@ Algorithm
    (e.g. a status bar injected at the top of ``B``); ``inlier`` is the fraction of
    rows that agree strongly.  The peak-to-sidelobe ratio (``psr``) is the ratio of
    the winning score to the best non-adjacent score in the window.
-4. Accept the best-scoring overlap iff it clears the ZNCC / PSR / inlier /
+4. When ``ds > 1``, run a cheap full-resolution (``ds=1``) refinement around the
+   coarse pick so the accepted overlap is parity-independent (an odd overlap
+   boundary otherwise misaligns the two ds=2 signature grids and decorrelates the
+   per-row ZNCC — under-scoring a pixel-exact match).
+5. Accept the best-scoring overlap iff it clears the ZNCC / PSR / inlier /
    min-overlap gates.
 
-CONTRACT deviation (flagged): ``OverlapResult.per_row_corr`` is one value **per
-signature row** in the overlap band — its length is ``overlap // ds``, not
-``overlap``.  The module works entirely in signature space, so a per-signature-row
-correlation vector is the natural (and non-fabricated) output.  ``overlap`` itself
-is still returned in original content-row coordinates as the contract requires.
+CONTRACT note (flagged): ``OverlapResult.per_row_corr`` holds one value per
+*signature row* of the overlap band.  After the ds=1 refinement its length equals
+``overlap``; if the coarse ds=2 result is kept its length is ``overlap // ds``.
+Either way ``overlap`` is returned in original content-row coordinates as the
+contract requires, and the stitch layer resamples ``per_row_corr`` to ``overlap``.
 
 Pure stdlib + numpy.  No cv2 / scipy / torch.
 """
@@ -317,9 +321,34 @@ def vertical_offset(
         sidelobe = max(float(finite.max()), _EPS)
         psr = min(_PSR_CAP, peak / sidelobe)
 
+    # 4) Full-resolution parity refinement. In ds>1 signature space the overlap
+    #    boundary H_A-overlap is quantized to a multiple of ds; when the true
+    #    boundary lands on an odd source row the A and B signature grids are offset
+    #    by one row, the per-row ZNCC decorrelates, and a pixel-exact overlap
+    #    under-scores (~0.5). Re-evaluate a handful of full-resolution (ds=1)
+    #    overlaps around the coarse pick and adopt the refined offset when it scores
+    #    at least as well, making default-level detection parity-independent.
     overlap = best_o * ds
     score = best_score
     inlier = best_inlier
+    final_corr = best_corr
+    if ds > 1:
+        sig1A = row_signature(grayA, 1, K)
+        sig1B = row_signature(grayB, 1, K)
+        Ha1, Hb1 = sig1A.shape[0], sig1B.shape[0]
+        hi1 = min(Ha1, Hb1)
+        if max_overlap is not None:
+            hi1 = min(hi1, max_overlap)
+        r_lo = max(1, overlap - ds)
+        r_hi = min(hi1, overlap + ds)
+        for o1 in range(r_lo, r_hi + 1):
+            corr1 = _per_row_zncc(sig1A[Ha1 - o1 : Ha1], sig1B[0:o1])
+            score1 = float(np.median(corr1))
+            if score1 >= score:
+                score = score1
+                overlap = o1
+                inlier = float(np.mean(corr1 > INLIER_CORR))
+                final_corr = corr1
 
     # PSR is a hard gate for ordinary matches, but a near-perfect ZNCC match (see
     # _STRONG_SCORE) is accepted without it — periodic chat layouts depress PSR
@@ -336,7 +365,7 @@ def vertical_offset(
         return OverlapResult(0, score, psr, inlier, False, "none", None)
 
     confidence = _confidence(score, psr, inlier)
-    return OverlapResult(overlap, score, psr, inlier, True, confidence, best_corr)
+    return OverlapResult(overlap, score, psr, inlier, True, confidence, final_corr)
 
 
 # ---------------------------------------------------------------------------
