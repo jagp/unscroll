@@ -95,11 +95,9 @@ Outputs land in `<workdir>`: `report.json`, `validation.png`, `crops/`, and
   than guessed.
 - **Sender attribution** is inferred from bubble side (left/right) and can be `unknown` for
   centered or full-width content.
-- **Confidence labels are conservative and pending real-device calibration.** The overlap
-  thresholds ship tuned against synthetic fixtures; on very uniform or perfectly periodic layouts
-  a correct join can still be labelled `low` confidence. The *reconstruction* (order, de-duplication,
-  splicing) is unaffected — only the confidence label is cautious. Drop real captures into
-  `tests/fixtures/` to calibrate the thresholds on genuine pixels.
+- **Thresholds are pending real-device calibration.** The overlap-detection thresholds ship tuned
+  against synthetic fixtures. They handle uniform and periodic chat layouts, but genuine captures
+  vary — drop real screenshots or a scroll video into `tests/fixtures/` to calibrate on real pixels.
 
 ## Privacy and scope
 
