@@ -206,11 +206,23 @@ def _per_row_zncc(A: np.ndarray, B: np.ndarray) -> np.ndarray:
     return corr.astype(np.float32, copy=False)
 
 
+# A near-perfect ZNCC match is an unambiguous overlap even when PSR is weak. This
+# happens with *periodic* content (evenly-spaced chat bubbles create correlation
+# sidelobes close to the peak), where PSR is a poor ambiguity signal but the pixel
+# agreement is not in doubt. Such a match is accepted (and can earn confidence)
+# without PSR support; PSR still gates weaker matches against false positives.
+_STRONG_SCORE: float = 0.90
+
+
 def _confidence(score: float, psr: float, inlier: float) -> str:
-    """Map validity margins to a coarse confidence label."""
-    if score >= 0.85 and psr >= 3.0 and inlier >= 0.75:
+    """Map validity margins to a coarse confidence label.
+
+    A very strong pixel agreement (high ``score`` + ``inlier``) earns confidence
+    even when ``psr`` is low, so periodic content is not perpetually rated "low".
+    """
+    if score >= 0.85 and inlier >= 0.75 and (psr >= 3.0 or score >= 0.97):
         return "high"
-    if score >= 0.75 and psr >= 2.0 and inlier >= 0.6:
+    if score >= 0.75 and inlier >= 0.6 and (psr >= 2.0 or score >= 0.90):
         return "medium"
     return "low"
 
@@ -309,11 +321,15 @@ def vertical_offset(
     score = best_score
     inlier = best_inlier
 
+    # PSR is a hard gate for ordinary matches, but a near-perfect ZNCC match (see
+    # _STRONG_SCORE) is accepted without it — periodic chat layouts depress PSR
+    # while the pixel agreement is unambiguous.
+    strong = score >= _STRONG_SCORE and inlier >= inlier_min
     valid = (
         score >= zncc_min
-        and psr >= psr_min
         and inlier >= inlier_min
         and overlap >= min_overlap
+        and (psr >= psr_min or strong)
     )
     if not valid:
         # Return diagnostics but no accepted overlap.
