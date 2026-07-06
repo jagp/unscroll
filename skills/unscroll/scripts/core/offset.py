@@ -18,8 +18,11 @@ Algorithm
 1. Reduce each frame to a compact ``row_signature`` — rows downsampled by ``ds``
    and each row collapsed to ``K`` horizontal block-means.  This averages away
    JPEG ringing and anti-aliasing noise while preserving vertical structure.
-2. Collapse each signature to a 1-D vertical profile and use an FFT normalized
-   cross-correlation (``coarse_lag_fft``) to *nominate* a candidate overlap.
+2. *Nominate* a candidate overlap with an FFT normalized cross-correlation of the
+   signatures.  ``vertical_offset`` uses a multi-channel correlation over all ``K``
+   feature columns (robust to periodic layouts, which alias in a 1-D profile);
+   ``coarse_lag_fft`` — the public helper used elsewhere — is the 1-D collapsed
+   variant per its contract.
 3. Around that nomination, evaluate a small window of candidate overlaps with a
    robust per-row ZNCC (zero-mean each row over its ``K`` features, normalized
    dot).  ``score = median(per_row_corr)`` is robust to a few mismatched rows
@@ -191,6 +194,49 @@ def coarse_lag_fft(sigA: np.ndarray, sigB: np.ndarray) -> int:
     return _coarse_corr(profileA, profileB)
 
 
+def _signature_nominate(
+    sigA: np.ndarray,
+    sigB: np.ndarray,
+    min_sig: int = _COARSE_MIN_SIG,
+) -> int:
+    """Nominate an overlap from a multi-channel full-signature FFT correlation.
+
+    Where :func:`coarse_lag_fft` collapses the ``K`` features to one 1-D profile,
+    this correlates *all* ``K`` feature columns and sums their cross-correlations.
+    Periodic layouts (evenly spaced chat bubbles) alias in the 1-D profile — the
+    per-row mean repeats, so the profile peaks at one bubble-pitch instead of the
+    true overlap — but the ``K`` horizontal features differ from bubble to bubble,
+    so the summed correlation keeps a sharp, unambiguous peak at the true overlap.
+    Each row is zero-meaned over its ``K`` features (matching the per-row ZNCC).
+    Cost is a single FFT along the row axis (``O(K * N log N)``).
+
+    Returns the candidate overlap in signature rows (``>= min_sig``).
+    """
+    A = np.asarray(sigA, dtype=np.float64)
+    B = np.asarray(sigB, dtype=np.float64)
+    A = A - A.mean(axis=1, keepdims=True)
+    B = B - B.mean(axis=1, keepdims=True)
+    La, Lb = A.shape[0], B.shape[0]
+    omax = min(La, Lb)
+    if omax < 1:
+        return 0
+
+    N = _next_pow2(La + Lb)
+    FA = np.fft.rfft(A, N, axis=0)
+    FB = np.fft.rfft(B, N, axis=0)
+    cc = np.fft.irfft((FA * np.conj(FB)).sum(axis=1), N)  # sum over K channels
+
+    o = np.arange(1, omax + 1)
+    dots = cc[La - o]                                      # overlap o -> lag La - o
+    a_energy = np.cumsum((A[::-1] ** 2).sum(axis=1))[:omax]
+    b_energy = np.cumsum((B ** 2).sum(axis=1))[:omax]
+    ncc = dots / (np.sqrt(a_energy * b_energy) + _EPS)
+
+    floor = min(max(1, min_sig), omax)
+    ncc[: floor - 1] = -np.inf
+    return int(np.argmax(ncc)) + 1
+
+
 # ---------------------------------------------------------------------------
 # Per-row ZNCC
 # ---------------------------------------------------------------------------
@@ -272,8 +318,11 @@ def vertical_offset(
     if omax_sig < min_sig:
         return none_result
 
-    # 1) Coarse FFT nomination (collapsed 1-D profile, per contract).
-    cand_sig = coarse_lag_fft(sigA, sigB)
+    # 1) Coarse FFT nomination. A multi-channel full-signature correlation is used
+    #    (not the collapsed 1-D profile) so periodic chat layouts, which alias in
+    #    the 1-D vertical mean, still nominate the true overlap rather than a
+    #    one-bubble-pitch sidelobe. (Public coarse_lag_fft stays 1-D per contract.)
+    cand_sig = _signature_nominate(sigA, sigB, min_sig=max(_COARSE_MIN_SIG, min_sig))
 
     # 2) Evaluate a window of candidate overlaps around the nomination with the
     #    per-row ZNCC and build the score curve S[o] = median per-row correlation.
