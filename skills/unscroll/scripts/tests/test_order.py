@@ -15,9 +15,11 @@ import unittest
 
 import numpy as np
 
+from unittest import mock
+
 from core.chrome import content_slices
 from core.imageio import Frame, content_hash, to_gray
-from core.order import build_overlap_matrix, order_frames
+from core.order import build_overlap_matrix, order_frames, order_frames_chain_first
 from tests import make_fixtures
 
 _STATUS_H = make_fixtures._STATUS_H
@@ -140,6 +142,108 @@ class TestFatalGap(unittest.TestCase):
         self.assertEqual(result["confidence"], "low")
         # The fatal gap must straddle the removed region (kept indices 1 -> 2).
         self.assertIn((1, 2), [g["between"] for g in fatal])
+
+
+def _count_offset_calls():
+    """Patch context counting core.order's ``vertical_offset`` calls (ladder excluded)."""
+    from core.offset import vertical_offset as real
+
+    calls: list[int] = []
+
+    def wrapper(a, b, *args, **kwargs):
+        calls.append(1)
+        return real(a, b, *args, **kwargs)
+
+    return calls, mock.patch("core.order.vertical_offset", side_effect=wrapper)
+
+
+class TestChainFirst(unittest.TestCase):
+    """order_frames_chain_first: O(n) consecutive pairs on well-ordered input,
+    full-matrix fallback only when the capture order can't be confirmed."""
+
+    def test_ordered_input_computes_only_consecutive_pairs(self):
+        shots, _true = _build(n_shots=5, overlap_frac=0.35)
+        frames = [_frame_from_shot(s, i, ts=None) for i, s in enumerate(shots)]
+        slices = content_slices(frames)
+
+        calls, patcher = _count_offset_calls()
+        with patcher:
+            result = order_frames_chain_first(frames, slices, use_ts=True)
+
+        self.assertEqual(result["order"], [0, 1, 2, 3, 4])
+        self.assertEqual(result["strategy"], "chain")
+        self.assertFalse(result["reordered"])
+        self.assertEqual(result["gaps"], [])
+        self.assertNotEqual(result["confidence"], "low")
+        self.assertEqual(len(calls), 4, "chain path must test exactly n-1 pairs")
+        self.assertEqual(
+            set(result["matrix"].keys()),
+            {(0, 1), (1, 2), (2, 3), (3, 4)},
+            "chain path must return a sparse adjacency-only matrix",
+        )
+
+    def test_reversed_input_recovered_without_full_matrix(self):
+        shots, _true = _build(n_shots=5, overlap_frac=0.35)
+        reversed_shots = shots[::-1]
+        frames = [_frame_from_shot(s, i, ts=None) for i, s in enumerate(reversed_shots)]
+        slices = content_slices(frames)
+
+        calls, patcher = _count_offset_calls()
+        with patcher:
+            result = order_frames_chain_first(frames, slices, use_ts=True)
+
+        self.assertEqual(result["order"], [4, 3, 2, 1, 0])
+        self.assertEqual(result["strategy"], "chain-reversed")
+        self.assertTrue(result["reordered"])
+        self.assertEqual([g for g in result["gaps"] if g.get("fatal")], [])
+        self.assertLessEqual(len(calls), 2 * 4, "reversed probe must stay O(n)")
+
+    def test_shuffled_input_falls_back_to_full_matrix(self):
+        shots, _true = _build(n_shots=5, overlap_frac=0.35)
+        perm = [3, 0, 4, 1, 2]
+        shuffled = [shots[p] for p in perm]
+        frames = [_frame_from_shot(s, i, ts=None) for i, s in enumerate(shuffled)]
+        slices = content_slices(frames)
+
+        calls, patcher = _count_offset_calls()
+        with patcher:
+            result = order_frames_chain_first(frames, slices, use_ts=True)
+
+        recovered_positions = [perm[i] for i in result["order"]]
+        self.assertEqual(recovered_positions, list(range(5)))
+        self.assertEqual(result["strategy"], "matrix-fallback")
+        self.assertEqual([g for g in result["gaps"] if g.get("fatal")], [])
+        # Fallback must reuse every already-computed pair, not start over.
+        self.assertEqual(len(calls), 5 * 4, "chain/probe pairs must seed the matrix")
+
+    def test_gap_on_ordered_input_reports_fatal_gap(self):
+        shots, _true = _build(n_shots=5, overlap_frac=0.35, seed=1)
+        kept = [shots[0], shots[1], shots[3], shots[4]]  # middle shot missing
+        frames = [_frame_from_shot(s, i, ts=float(i)) for i, s in enumerate(kept)]
+        slices = content_slices(frames)
+
+        result = order_frames_chain_first(frames, slices, use_ts=True)
+
+        fatal = [g for g in result["gaps"] if g.get("fatal")]
+        self.assertIn((1, 2), [g["between"] for g in fatal])
+        self.assertEqual(result["strategy"], "matrix-fallback")
+        self.assertEqual(result["confidence"], "low")
+
+
+class TestMatrixSeeding(unittest.TestCase):
+    def test_build_overlap_matrix_reuses_known_pairs(self):
+        shots, _true = _build(n_shots=4, overlap_frac=0.35)
+        frames = [_frame_from_shot(s, i) for i, s in enumerate(shots)]
+        slices = content_slices(frames)
+        sentinel = object()
+
+        calls, patcher = _count_offset_calls()
+        with patcher:
+            matrix = build_overlap_matrix(frames, slices, known={(0, 1): sentinel})
+
+        self.assertIs(matrix[(0, 1)], sentinel, "known pairs must not be recomputed")
+        self.assertEqual(len(calls), 4 * 3 - 1)
+        self.assertEqual(len(matrix), 4 * 3)
 
 
 if __name__ == "__main__":

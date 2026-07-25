@@ -206,13 +206,12 @@ def run_pipeline(
     # --- chrome mask (registry-free) ---
     slices = content_slices(frames)
 
-    # --- pairwise overlap matrix (checkpointed by the frame-id set) ---
+    # --- overlap + ordering: chain-first (O(n) consecutive pairs; the full
+    #     pairwise matrix is computed only when the capture order can't be
+    #     confirmed — retry ladder + fatal-gap detection inside) ---
     frame_key = hash_inputs([f.id for f in frames])
-    matrix = order_mod.build_overlap_matrix(frames, slices)
+    order_result = order_mod.order_frames_chain_first(frames, slices, use_ts=use_ts)
     manifest.record("overlap", frame_key, "in-memory")
-
-    # --- ordering (retry ladder + fatal-gap detection inside) ---
-    order_result = order_mod.order_frames(frames, slices, matrix, use_ts=use_ts)
     order = order_result["order"]
     matrix = order_result["matrix"]
     fatal_gaps = [g for g in order_result["gaps"] if g.get("fatal")]
@@ -263,6 +262,7 @@ def run_pipeline(
         "frames": len(frames),
         "order": order,
         "reordered": order_result["reordered"],
+        "ordering_strategy": order_result.get("strategy", "matrix"),
         "confidence": order_result["confidence"],
         "total_messages": len(messages),
         "fatal_gaps": fatal_gaps,

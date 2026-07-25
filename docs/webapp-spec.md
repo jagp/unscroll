@@ -132,8 +132,7 @@ One `Job` row per processing run, with stages mirroring the engine:
 |---|---|---|
 | `intake` | engine `intake()` (+ HEIC transcode, video keyframing) | frame count, source kind |
 | `chrome` | `content_slices()` | per-frame content bounds |
-| `overlap` | `build_overlap_matrix()` | pair scores |
-| `order` | `order_frames()` (retry ladder inside) | order, gaps[], confidence |
+| `overlap`+`order` | `order_frames_chain_first()` (O(n) chain probe; full matrix + retry ladder only on fallback) | order, strategy, gaps[], confidence |
 | `stitch` | `compute_splices()` + `stitch()` | `validation.png` |
 | `segment` | `segment_messages()` + `dedup_bands()` | crops/, partial transcript |
 | `read` | **Claude API vision** over crops (§7) | filled messages |

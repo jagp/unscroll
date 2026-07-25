@@ -8,10 +8,18 @@ single ordered chain.
 
 Pipeline
 --------
+0. :func:`order_frames_chain_first` — the preferred entry point. Same-device
+   captures almost always arrive already ordered (screenshot filenames, video
+   keyframes), so it tests only the ``n-1`` consecutive pairs first and accepts
+   the input order when every adjacency validates. A reversed capture order is
+   probed at the same O(n) cost. Only when the capture order cannot be confirmed
+   does it fall back to the full matrix + :func:`order_frames` below — seeded
+   with every pair already computed, so nothing is measured twice.
 1. :func:`build_overlap_matrix` — score every ordered pair ``(i, j)`` (bottom of
    ``i`` vs top of ``j``) after cropping each frame's luma to its
    :class:`core.chrome.ContentSlice`. ``N`` is small (typically < 50) so the full
-   ``N*(N-1)`` matrix is cheap and lets ordering see every candidate edge.
+   ``N*(N-1)`` matrix is affordable when needed; it lets ordering see every
+   candidate edge.
 2. :func:`order_frames` — greedily assemble a Hamiltonian-ish path from the valid
    directed edges (each screenshot has ~one true successor and ~one true
    predecessor), joining any leftover sub-chains, then walking a **retry ladder**
@@ -36,7 +44,7 @@ import numpy as np
 
 from core.offset import OverlapResult, relaxed_vertical_offset, vertical_offset
 
-__all__ = ["build_overlap_matrix", "order_frames"]
+__all__ = ["build_overlap_matrix", "order_frames", "order_frames_chain_first"]
 
 # Rank labels so the weakest adjacency can drive the overall confidence.
 _CONF_RANK = {"high": 3, "medium": 2, "low": 1, "none": 0}
@@ -71,20 +79,24 @@ def _ts(frame: Any) -> float | None:
 # pairwise overlap matrix
 # --------------------------------------------------------------------------- #
 def build_overlap_matrix(
-    frames: list[Any], slices: list[Any]
+    frames: list[Any],
+    slices: list[Any],
+    known: dict[tuple[int, int], OverlapResult] | None = None,
 ) -> dict[tuple[int, int], OverlapResult]:
     """Score every ordered content-frame pair ``(i, j)`` (bottom of i vs top of j).
 
     Returns a dict keyed ``(i, j)`` (``i != j``) whose value is the
     :class:`~core.offset.OverlapResult` of ``vertical_offset`` between frame ``i``'s
-    content and frame ``j``'s content. ``N`` is small, so all pairs are computed.
+    content and frame ``j``'s content. Pairs already present in ``known`` (e.g. the
+    consecutive pairs a chain-first probe measured) are carried over untouched
+    instead of being recomputed.
     """
     grays = [_content_gray(f, s) for f, s in zip(frames, slices)]
     n = len(frames)
-    matrix: dict[tuple[int, int], OverlapResult] = {}
+    matrix: dict[tuple[int, int], OverlapResult] = dict(known) if known else {}
     for i in range(n):
         for j in range(n):
-            if i == j:
+            if i == j or (i, j) in matrix:
                 continue
             matrix[(i, j)] = vertical_offset(grays[i], grays[j])
     return matrix
@@ -286,3 +298,92 @@ def order_frames(
         "reordered": reordered,
         "matrix": matrix,
     }
+
+
+def order_frames_chain_first(
+    frames: list[Any],
+    slices: list[Any],
+    use_ts: bool = True,
+) -> dict:
+    """Reconstruct frame order, trusting-but-verifying the capture order first.
+
+    Same-device captures (sorted screenshot filenames, video keyframes) almost
+    always arrive top-to-bottom already, so the ``N*(N-1)`` matrix is wasted work
+    in the common case. This entry point verifies the cheap hypotheses first and
+    escalates only on evidence:
+
+    1. **Forward chain** — score only the ``n-1`` consecutive pairs. All valid →
+       accept the input order (``strategy: "chain"``).
+    2. **Reversed chain** — if most forward pairs failed, the batch may simply be
+       newest-first; probe the ``n-1`` reversed pairs (``strategy:
+       "chain-reversed"``). Still O(n).
+    3. **Retry ladder** — if most forward pairs validated, the order is right and
+       the stragglers are hard pairs (blur, sparse content): escalate just those
+       through :func:`relaxed_vertical_offset`. Recovered ones become non-fatal
+       low-confidence joins, exactly as in :func:`order_frames`.
+    4. **Full-matrix fallback** — anything else (shuffled batch, or a dead
+       adjacency that could mean mis-ordering) gets the complete pairwise matrix
+       and :func:`order_frames`, which alone may declare *fatal* gaps. The matrix
+       is seeded with every pair already computed above (``strategy:
+       "matrix-fallback"``).
+
+    Returns the same dict as :func:`order_frames` plus a ``"strategy"`` key. On
+    the chain paths ``matrix`` is sparse (adjacencies only) — sufficient for
+    every downstream consumer, which read only consecutive-pair entries.
+    """
+    n = len(frames)
+    if n == 0:
+        return {"order": [], "gaps": [], "confidence": "high",
+                "reordered": False, "matrix": {}, "strategy": "chain"}
+    if n == 1:
+        return {"order": [0], "gaps": [], "confidence": "high",
+                "reordered": False, "matrix": {}, "strategy": "chain"}
+
+    grays = [_content_gray(f, s) for f, s in zip(frames, slices)]
+    matrix: dict[tuple[int, int], OverlapResult] = {}
+
+    forward = list(zip(range(n), range(1, n)))
+    for i, j in forward:
+        matrix[(i, j)] = vertical_offset(grays[i], grays[j])
+    forward_valid = sum(1 for p in forward if matrix[p].valid)
+
+    def _chain_result(order: list[int], strategy: str) -> dict:
+        gaps, weakest = _validate_adjacencies(order, frames, slices, matrix)
+        return {
+            "order": order,
+            "gaps": gaps,
+            "confidence": _RANK_CONF[weakest],
+            "reordered": order != list(range(n)),
+            "matrix": matrix,
+            "strategy": strategy,
+        }
+
+    if forward_valid == n - 1:
+        return _chain_result(list(range(n)), "chain")
+
+    if forward_valid < (n - 1) / 2:
+        # Mostly invalid forward: probe a newest-first batch before going O(n^2).
+        reverse = [(k + 1, k) for k in range(n - 1)]
+        for i, j in reverse:
+            matrix[(i, j)] = vertical_offset(grays[i], grays[j])
+        if all(matrix[p].valid for p in reverse):
+            return _chain_result(list(range(n - 1, -1, -1)), "chain-reversed")
+    else:
+        # Mostly valid forward: the order is right; ladder just the stragglers.
+        # A remaining fatal adjacency might instead mean local mis-ordering, so
+        # that case falls through to the full matrix rather than being declared.
+        gaps, weakest = _validate_adjacencies(list(range(n)), frames, slices, matrix)
+        if not any(g.get("fatal") for g in gaps):
+            return {
+                "order": list(range(n)),
+                "gaps": gaps,
+                "confidence": _RANK_CONF[weakest],
+                "reordered": False,
+                "matrix": matrix,
+                "strategy": "chain",
+            }
+
+    full = build_overlap_matrix(frames, slices, known=matrix)
+    result = order_frames(frames, slices, full, use_ts=use_ts)
+    result["strategy"] = "matrix-fallback"
+    return result

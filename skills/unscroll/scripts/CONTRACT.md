@@ -124,8 +124,17 @@ class Band:
   min-edge row with `low` confidence.
 
 ### core/order.py
-- `build_overlap_matrix(frames, slices) -> dict[tuple[int,int], OverlapResult]` — directed pair scores
-  (bottom-of-i vs top-of-j) for candidate pairs.
+- `order_frames_chain_first(frames, slices, use_ts=True) -> dict` — **preferred entry point.** Verifies
+  the given (input) order by scoring only the `n-1` consecutive pairs; probes the reversed order at the
+  same O(n) cost when forward mostly fails; ladders stragglers when forward mostly succeeds. Falls back
+  to `build_overlap_matrix` (seeded with every pair already computed) + `order_frames` only when the
+  capture order can't be confirmed. Returns the `order_frames` dict plus `"strategy"`:
+  `"chain" | "chain-reversed" | "matrix-fallback"`. On chain paths `matrix` is sparse (adjacencies only);
+  downstream consumers (`compute_splices`, `dedup_bands`, `rollup`) read only adjacency keys. Fatal gaps
+  are only ever declared by the fallback path, after full-matrix evidence.
+- `build_overlap_matrix(frames, slices, known=None) -> dict[tuple[int,int], OverlapResult]` — directed
+  pair scores (bottom-of-i vs top-of-j) for candidate pairs. Pairs present in `known` are carried over
+  untouched, never recomputed.
 - `order_frames(frames, slices, matrix, use_ts=True) -> dict` — returns
   `{"order": list[int], "gaps": list[dict], "confidence": str, "reordered": bool, "matrix": ...}`. Greedy
   best-successor/predecessor chain; timestamps only break ties. Runs the **retry ladder** on any failing

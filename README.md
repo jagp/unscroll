@@ -29,8 +29,9 @@ files are the deliverable.
 
 ## How it works
 
-- **Content-based ordering** — a full pairwise overlap matrix plus a greedy chain recover the
-  order even from a shuffled batch; timestamps are only a tiebreaker.
+- **Content-based ordering** — the capture order is verified, not trusted: consecutive pairs are
+  checked first (O(n) for an in-order or reversed batch), and a full pairwise overlap matrix plus
+  a greedy chain recover the order from a shuffled batch; timestamps are only a tiebreaker.
 - **Registry-free chrome detection** — a temporal-stability mask (per-row variance across
   same-resolution frames) finds the content region, with a single-image structural fallback.
 - **Self-healing** — content-hash checkpointing (resumable runs), a per-adjacency retry ladder

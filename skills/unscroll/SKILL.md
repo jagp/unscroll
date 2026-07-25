@@ -138,8 +138,9 @@ output file paths.
 
 ## What the scripts guarantee (so you don't re-derive it)
 
-- **Ordering is by content, not file order.** Screenshots arrive in any order; a full pairwise
-  overlap matrix and a greedy chain reconstruct the true top-to-bottom sequence. Timestamps are
+- **Ordering is by content, not file order.** The capture order is *verified*, never trusted:
+  consecutive pairs are checked first (O(n)); a shuffled batch escalates to a full pairwise
+  overlap matrix and a greedy chain that reconstruct the true sequence. Timestamps are
   only a tiebreaker.
 - **Self-healing.** Work is content-hash checkpointed (resumable). Every adjacency that doesn't
   validate at the default threshold is retried through a relaxation ladder before any gap is

@@ -79,6 +79,11 @@ class TestScreenshotPipeline(unittest.TestCase):
     def test_reports_confidence(self):
         self.assertIn(self.report["confidence"], {"high", "medium", "low"})
 
+    def test_ordered_capture_uses_chain_strategy(self):
+        # In-order filenames must be confirmed by the O(n) chain probe alone,
+        # never by paying for the full pairwise matrix.
+        self.assertEqual(self.report["ordering_strategy"], "chain")
+
     def test_model_fill_then_render(self):
         # Simulate the model reading crops and filling text, then re-rendering.
         with open(self.report["transcript_json"], encoding="utf-8") as fh:

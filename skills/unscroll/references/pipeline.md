@@ -44,14 +44,20 @@ defaults to the document's own directory; `--formats` defaults to `json,text,mar
    `(top, bottom)` that bounds the message-content region after status bar / nav / input bar /
    keyboard are masked off. Registry-free; see `chrome-masking.md`.
 
-3. **Overlap matrix** (`core.order.build_overlap_matrix`) — score every ordered pair `(i, j)`
-   (bottom of `i` vs top of `j`) with `core.offset.vertical_offset`. `N` is small, so the full
-   directed matrix is computed. See `overlap-detection.md`.
+3. **Overlap + ordering, chain-first** (`core.order.order_frames_chain_first`) — same-device
+   captures almost always arrive already ordered (sorted screenshot filenames, video keyframes),
+   so only the `n-1` consecutive pairs are scored with `core.offset.vertical_offset` first. All
+   valid → the input order is confirmed in O(n) (`strategy: "chain"`). A newest-first batch is
+   probed in reverse at the same cost (`"chain-reversed"`); isolated stragglers in a
+   mostly-valid chain go through the retry ladder. See `overlap-detection.md`.
 
-4. **Ordering** (`core.order.order_frames`) — greedily assemble the true top-to-bottom chain from
-   the valid directed edges, join leftover sub-chains, then run the **retry ladder** on every
-   adjacency that didn't already validate. Returns `order`, `gaps`, `confidence`, `reordered`,
-   and the (possibly updated) `matrix`. Fatal gaps are flagged here but never raised.
+4. **Full-matrix fallback** (`core.order.build_overlap_matrix` + `order_frames`) — only when the
+   capture order can't be confirmed (shuffled batch, or a dead adjacency that could mean
+   mis-ordering): score every ordered pair `(i, j)` — seeded with the pairs already computed, so
+   nothing is measured twice — then greedily assemble the true top-to-bottom chain, join leftover
+   sub-chains, and run the **retry ladder** on every adjacency that didn't already validate.
+   Returns `order`, `gaps`, `confidence`, `reordered`, and the (possibly updated) `matrix`.
+   Fatal gaps are declared only here, after full-matrix evidence, and are flagged, never raised.
 
 5. **Stitch** (`core.stitch.compute_splices` + `stitch`) — choose a gutter splice row inside each
    overlap band, then concatenate each frame's content contribution into one tall RGB image,

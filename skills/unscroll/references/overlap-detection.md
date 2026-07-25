@@ -71,9 +71,14 @@ The `confidence` label is a coarser bucket of the same margins: `high` needs `sc
 
 ## Ordering and the retry ladder
 
-`core/order.py` turns pairwise scores into one chain:
+`core/order.py` turns pairwise scores into one chain, cheapest hypothesis first:
 
-- `build_overlap_matrix` scores every ordered pair `(i, j)`.
+- `order_frames_chain_first` (the pipeline's entry point) scores only the `n-1` consecutive
+  pairs. All valid → the input order stands, O(n) total (`strategy: "chain"`). If most fail it
+  probes the reversed order at the same cost (`"chain-reversed"`); if only a few fail it ladders
+  just those. Anything unresolved escalates to the full matrix below (`"matrix-fallback"`),
+  seeded with every pair already computed.
+- `build_overlap_matrix` scores every ordered pair `(i, j)` (skipping `known` seeds).
 - `order_frames` links valid directed edges strongest-first into disjoint chains (each node has
   ≤1 successor and ≤1 predecessor; a union-find guards against cycles), joins leftover sub-chains
   by best available score (timestamps only break ties and seed the first pick), then calls
@@ -96,8 +101,10 @@ recorded as a **fatal gap**: `{"between": (a, b), "fatal": True, "reason": "no o
 ## Fatal-gap semantics
 
 A fatal gap means a section of the conversation is genuinely missing between two captures — no
-amount of relaxation finds a shared anchor. `order_frames` never raises; it returns the gap with
-`fatal: True` and lets the caller decide. `run_pipeline` collects fatal gaps into
+amount of relaxation finds a shared anchor. Fatal gaps are only ever declared on the full-matrix
+path: a failed chain adjacency alone is never enough, because it could also mean the batch is
+mis-ordered, and only the matrix can tell those apart. `order_frames` never raises; it returns
+the gap with `fatal: True` and lets the caller decide. `run_pipeline` collects fatal gaps into
 `report.json:fatal_gaps` and still writes the partial output. The model must check that field
 first and, if non-empty, stop and ask the user to re-capture the missing stretch with overlap
 (see the SKILL flow). Adjacencies recovered only by relaxing are *non-fatal* — surface them as
