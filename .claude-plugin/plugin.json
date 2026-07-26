@@ -13,7 +13,8 @@
     "imessage",
     "whatsapp",
     "stitch",
-    "scroll-capture"
+    "scroll-capture",
+    "ocr"
   ],
   "license": "MIT"
 }

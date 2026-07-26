@@ -1,7 +1,5 @@
 #!/usr/bin/env python3
-# Keep the module docstring ASCII: argparse prints it as the --help description,
-# and a Windows cp1252 console raises UnicodeEncodeError on anything outside it.
-"""unscroll - reconstruct an async chat thread into a structured transcript.
+"""unscroll — reconstruct an async chat thread into a structured transcript.
 
 This is the pipeline ORCHESTRATOR. Deterministic geometry (numpy/Pillow/ffmpeg)
 does everything except read glyphs; the multimodal model reads the per-message
@@ -9,9 +7,9 @@ crops this script emits and fills in the text. See ``CONTRACT.md``.
 
 Two entry points cover the whole flow:
 
-* ``run <input> --workdir <wd>`` - intake (a folder of screenshots, a .zip of
-  them, or a scroll-capture video) -> chrome-mask -> overlap -> order -> stitch
-  -> segment/dedup. Emits, into ``<wd>``:
+* ``run <input> --workdir <wd>`` — intake (a folder of screenshots, a .zip of
+  them, or a scroll-capture video) → chrome-mask → overlap → order → stitch →
+  segment/dedup. Emits, into ``<wd>``:
     - ``validation.png``       the stitched thread (a completeness check)
     - ``crops/msg_*.png``      one high-res crop per message, in order
     - ``transcript.json``      the canonical document (content=null until read)
@@ -20,7 +18,7 @@ Two entry points cover the whole flow:
   The model then reads each crop (path carried in each message's ``notes``),
   fills ``content`` / ``display_name`` / visible ``timestamp`` / corrects
   ``type``, and re-renders with ``render``.
-* ``render <doc.json> --workdir <wd> [--formats json,text,markdown]`` - write the
+* ``render <doc.json> --workdir <wd> [--formats json,text,markdown]`` — write the
   final transcripts from a completed canonical document.
 
 Puntable by design: media, timestamps and reactions that cannot be read become
