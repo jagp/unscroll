@@ -1,19 +1,8 @@
 ---
 name: unscroll
 description: >
-  Reconstructs a complete text-message conversation thread into a structured, portable
-  transcript from EITHER overlapping screenshots OR a scroll-capture video. Use this skill
-  whenever a user provides screenshots of a messaging conversation — uploaded as individual
-  image files, a folder, or a ZIP — or a screen recording of a chat, and wants them assembled
-  into a transcript, archive, or structured record. Triggers on: "stitch my screenshots",
-  "combine these messages", "reconstruct my conversation", "make an archive of my texts",
-  "export my chat history from screenshots", "video of me scrolling my messages", "screen
-  recording of a chat", "turn this scroll capture into a transcript", or any request to
-  assemble fragmented or scrolled views of a messaging thread into a readable whole. Also
-  triggers when a user provides a batch of conversation screenshots or a scroll video without
-  explicit instructions, clearly intending to do something with them together. Handles iOS
-  Messages and other common chat layouts; chrome (status bar, nav, input bar, keyboard) is
-  detected at runtime, so no per-app configuration is needed.
+  Reconstructs a text chat thread from overlapping screenshots or a scroll-capture video.
+  Use when the user provides chat screenshots, a ZIP/folder of screenshots, a screen recording and wants a transcript or structured archive, or when they mention an intent to: {export, download, save or transcribe} a {conversation, chat, thread, messages}.
 ---
 
 # Unscroll
@@ -70,13 +59,13 @@ validation image), `--no-timestamps` (ignore file timestamps entirely when order
 
 The command prints a JSON summary and writes into `<workdir>`:
 
-| Artifact | What it is |
-|----------|------------|
-| `report.json` | Confidence, flags, resolved order, and any fatal gaps |
-| `validation.png` | The stitched thread — a completeness check |
-| `crops/msg_*.png` | One high-res crop per message, in order |
-| `transcript.json` | The canonical document (`content` is `null` until you read it) |
-| `transcript.txt` / `transcript.md` | Draft renders (unread messages show `[unreadable]`) |
+| Artifact                           | What it is                                                     |
+| ---------------------------------- | -------------------------------------------------------------- |
+| `report.json`                      | Confidence, flags, resolved order, and any fatal gaps          |
+| `validation.png`                   | The stitched thread — a completeness check                     |
+| `crops/msg_*.png`                  | One high-res crop per message, in order                        |
+| `transcript.json`                  | The canonical document (`content` is `null` until you read it) |
+| `transcript.txt` / `transcript.md` | Draft renders (unread messages show `[unreadable]`)            |
 
 ### 3. Check for fatal gaps
 
@@ -138,7 +127,7 @@ output file paths.
 
 ## What the scripts guarantee (so you don't re-derive it)
 
-- **Ordering is by content, not file order.** The capture order is *verified*, never trusted:
+- **Ordering is by content, not file order.** The capture order is _verified_, never trusted:
   consecutive pairs are checked first (O(n)); a shuffled batch escalates to a full pairwise
   overlap matrix and a greedy chain that reconstruct the true sequence. Timestamps are
   only a tiebreaker.
@@ -156,11 +145,11 @@ output file paths.
 
 Load these only when you need the detail; the flow above is enough for a normal run.
 
-| File | Read when |
-|------|-----------|
-| `references/pipeline.md` | You need the end-to-end stages, CLI, artifacts, and self-healing tactics |
+| File                              | Read when                                                                         |
+| --------------------------------- | --------------------------------------------------------------------------------- |
+| `references/pipeline.md`          | You need the end-to-end stages, CLI, artifacts, and self-healing tactics          |
 | `references/overlap-detection.md` | You need overlap scoring, confidence gates, or fatal-gap / retry-ladder semantics |
-| `references/chrome-masking.md` | You need the registry-free chrome detection detail |
-| `references/video-intake.md` | The input is a video and you want the keyframe-selection detail |
-| `references/extraction.md` | You need segmentation, sender-side, dedup, or the puntable media/timestamp rules |
-| `references/output-formats.md` | You need the canonical JSON schema or the text/Markdown transcript formats |
+| `references/chrome-masking.md`    | You need the registry-free chrome detection detail                                |
+| `references/video-intake.md`      | The input is a video and you want the keyframe-selection detail                   |
+| `references/extraction.md`        | You need segmentation, sender-side, dedup, or the puntable media/timestamp rules  |
+| `references/output-formats.md`    | You need the canonical JSON schema or the text/Markdown transcript formats        |
