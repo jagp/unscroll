@@ -131,6 +131,21 @@ class TestVerticalOffsetRecovery(unittest.TestCase):
         self.assertEqual(res.per_row_corr.dtype, np.float32)
 
 
+class TestConfidenceLabels(unittest.TestCase):
+    def test_pristine_large_overlap_earns_high_confidence(self):
+        # The product's happy path: a clean, unambiguous overlap must be rated
+        # exactly "high". Every other assertion in the suite only excludes
+        # "low", so without this pin a confidence-downgrade regression (nothing
+        # ever reaching "high") would ship invisibly.
+        parent = make_parent(1000, 320)
+        h = 400
+        for true_overlap in (80, 150, 220):
+            A = parent[100 : 100 + h]
+            B = parent[100 + h - true_overlap : 100 + h - true_overlap + h]
+            res = vertical_offset(A, B)
+            self.assertEqual(res.confidence, "high", str(res))
+
+
 class TestValidityGating(unittest.TestCase):
     def test_unrelated_arrays_are_invalid(self):
         rng = np.random.default_rng(7)
