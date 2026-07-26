@@ -1,6 +1,6 @@
 {
   "name": "unscroll",
-  "version": "0.1.0",
+  "version": "0.0.1",
   "description": "Reconstructs an async text-message thread into a structured transcript (JSON, Markdown, plain text) from overlapping chat screenshots or a scroll-capture video. Image-only, no device or database access.",
   "author": {
     "name": "Jared Parmenter",

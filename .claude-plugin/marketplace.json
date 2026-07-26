@@ -10,7 +10,7 @@
       "name": "unscroll",
       "source": "./",
       "description": "Reconstructs an async text-message thread into a structured transcript from overlapping chat screenshots or a scroll-capture video.",
-      "version": "0.1.0",
+      "version": "0.0.1",
       "license": "MIT",
       "keywords": ["screenshots", "transcript", "messaging", "scroll-capture"],
       "category": "productivity"
