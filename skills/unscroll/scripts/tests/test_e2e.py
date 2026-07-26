@@ -52,6 +52,8 @@ class TestScreenshotPipeline(unittest.TestCase):
     def test_validation_image_written(self):
         self.assertTrue(os.path.exists(self.report["validation_png"]))
         self.assertGreater(os.path.getsize(self.report["validation_png"]), 0)
+        # The stitched height must account for every contributed segment.
+        self.assertNotIn("stitch_height_mismatch", self.report["flags"])
 
     def test_canonical_json_is_valid(self):
         with open(self.report["transcript_json"], encoding="utf-8") as fh:
@@ -77,7 +79,10 @@ class TestScreenshotPipeline(unittest.TestCase):
         self.assertEqual(self.report["fatal_gaps"], [])
 
     def test_reports_confidence(self):
-        self.assertIn(self.report["confidence"], {"high", "medium", "low"})
+        # A clean contiguous capture must never be rated "low". (Not pinned to
+        # "high": the flat-bubble fixture is periodic, which caps per-pair PSR,
+        # and the rollup reports the weakest link — observed value is "medium".)
+        self.assertIn(self.report["confidence"], {"high", "medium"})
 
     def test_ordered_capture_uses_chain_strategy(self):
         # In-order filenames must be confirmed by the O(n) chain probe alone,
@@ -134,6 +139,8 @@ class TestVideoPipeline(unittest.TestCase):
 
     def test_video_validation_image(self):
         self.assertTrue(os.path.exists(self.report["validation_png"]))
+        self.assertGreater(os.path.getsize(self.report["validation_png"]), 0)
+        self.assertNotIn("stitch_height_mismatch", self.report["flags"])
 
 
 if __name__ == "__main__":

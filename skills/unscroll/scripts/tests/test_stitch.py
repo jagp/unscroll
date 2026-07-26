@@ -18,7 +18,7 @@ import numpy as np
 from core.chrome import content_slices
 from core.imageio import Frame, content_hash, to_gray
 from core.order import build_overlap_matrix, order_frames
-from core.stitch import compute_splices, stitch
+from core.stitch import _resample_corr, compute_splices, stitch
 from tests import make_fixtures
 from tests.test_order import _rich_chat
 
@@ -62,6 +62,24 @@ def _best_match_diff(window: np.ndarray, haystack: np.ndarray) -> tuple[int, flo
         if d < best:
             best, best_top = d, t
     return best_top, best
+
+
+class TestResampleCorr(unittest.TestCase):
+    def test_corr_is_always_stretched_to_overlap_rows(self):
+        # A kept ds=2 coarse result carries per_row_corr in SIGNATURE space
+        # (length overlap // 2); splice-row scoring indexes it in content-row
+        # space. compute_splices' resampling is the one place that conversion
+        # happens, so its output must be exactly `overlap` values with the
+        # endpoints preserved — whatever length comes in.
+        overlap = 40
+        half = np.linspace(0.2, 0.9, num=overlap // 2, dtype=np.float32)
+        out = _resample_corr(half, overlap)
+        self.assertEqual(out.shape[0], overlap)
+        self.assertAlmostEqual(float(out[0]), 0.2, places=5)
+        self.assertAlmostEqual(float(out[-1]), 0.9, places=5)
+
+        full = np.linspace(0.1, 1.0, num=overlap, dtype=np.float32)
+        self.assertEqual(_resample_corr(full, overlap).shape[0], overlap)
 
 
 class TestStitchHeight(unittest.TestCase):

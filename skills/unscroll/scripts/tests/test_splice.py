@@ -57,6 +57,11 @@ class TestSelectSpliceRow(unittest.TestCase):
         self.assertIsInstance(res, SpliceResult)
         self.assertTrue(0 <= res.s < overlap)
         self.assertTrue(_in_gutter(res.s), f"s={res.s} not in a gutter")
+        # Comfortably inside the band, not grazing its first/last row — in real
+        # screenshots the gutter edges sit against bubble anti-aliasing.
+        a, b = next((a, b) for a, b in GUTTERS if a <= res.s < b)
+        self.assertGreater(res.s, a, f"s={res.s} grazes gutter top {a}")
+        self.assertLess(res.s, b - 1, f"s={res.s} grazes gutter bottom {b - 1}")
         _, edge = gutter_profile(rgb, BG)
         self.assertLess(float(edge[res.s]), 1.0)              # cut sits on flat row
         self.assertIn(res.confidence, ("high", "medium"))
